@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Libras Bridge - Tradutor em Tempo Real</title>
+
+  <!-- Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@300..700&family=Poppins:wght@300..800&display=swap" rel="stylesheet">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v=2">
+
+  <!-- Socket.IO -->
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+  <style>
+    /* Estilos específicos do tradutor */
+    .video-area {
+      position: relative;
+      background: #000;
+      height: 520px;
+      border-radius: 8px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+      overflow: hidden;
+    }
+
+    #video-canvas {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: none;
+    }
+
+    #video-canvas.active {
+      display: block;
+    }
+
+    .video-placeholder {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      color: #fff;
+      font-family: "Fredoka";
+      font-size: 26px;
+      opacity: 0.9;
+      z-index: 1;
+    }
+
+    .video-placeholder.hidden {
+      display: none;
+    }
+
+    .tradutor-controls {
+      display: flex;
+      gap: 15px;
+      margin-top: 20px;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .control-btn {
+      padding: 14px 32px;
+      border-radius: 50px;
+      border: none;
+      font-weight: 700;
+      font-size: 16px;
+      cursor: pointer;
+      transition: all 0.3s;
+      font-family: 'Poppins', sans-serif;
+    }
+
+    .control-btn.start {
+      background: var(--teal);
+      color: white;
+    }
+
+    .control-btn.start:hover {
+      background: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    .control-btn.stop {
+      background: #e74c3c;
+      color: white;
+    }
+
+    .control-btn.stop:hover {
+      background: #c0392b;
+    }
+
+    .control-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .translation-panel {
+      margin-top: 30px;
+      background: rgba(255, 255, 255, 0.95);
+      padding: 25px;
+      border-radius: 16px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+
+    .translation-title {
+      font-family: 'Fredoka';
+      font-size: 24px;
+      color: var(--teal);
+      margin-bottom: 15px;
+    }
+
+    .translation-output {
+      background: #f8f9fa;
+      padding: 20px;
+      border-radius: 12px;
+      min-height: 80px;
+      font-size: 20px;
+      color: var(--text-dark);
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 2px solid var(--mint-200);
+    }
+
+    .translation-output.empty {
+      color: var(--muted);
+      font-weight: 400;
+      font-size: 16px;
+    }
+
+    .history-panel {
+      margin-top: 20px;
+      background: rgba(255, 255, 255, 0.9);
+      padding: 20px;
+      border-radius: 12px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .history-title {
+      font-family: 'Fredoka';
+      font-size: 18px;
+      color: var(--teal);
+      margin-bottom: 10px;
+    }
+
+    .history-item {
+      padding: 8px 12px;
+      background: var(--mint-200);
+      margin-bottom: 8px;
+      border-radius: 8px;
+      font-size: 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .history-time {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      color: var(--muted);
+      margin-top: 15px;
+      justify-content: center;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #95a5a6;
+    }
+
+    .status-dot.connected {
+      background: #2ecc71;
+      animation: pulse 2s infinite;
+    }
+
+    .status-dot.detecting {
+      background: #f39c12;
+      animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .confidence-bar {
+      margin-top: 15px;
+      background: #ecf0f1;
+      height: 8px;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .confidence-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--teal));
+      transition: width 0.3s;
+      width: 0%;
+    }
+
+    .loading-spinner {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 3px solid rgba(255,255,255,.3);
+      border-radius: 50%;
+      border-top-color: #fff;
+      animation: spin 1s ease-in-out infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header / Nav -->
+  <header class="site-header">
+    <div class="container header-inner">
+      <div class="brand">
+        <img src="{{ url_for('static', filename='logolibras.png') }}" alt="Libras Bridge logo" class="logo">
+      </div>
+      <nav class="main-nav" aria-label="Menu principal">
+        <a href="#explorar" class="nav-link">explorar</a>
+        <a href="#contato" class="nav-link">contato</a>
+        <button id="language" class="lang-btn" aria-label="Mudar idioma">Português - Brasil</button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Hero INICIO-->
+  <main>
+    <section id="home" class="hero">
+      <div class="container hero-inner">
+        <div class="hero-left">
+          <h1 class="hero-title">
+            Traduzindo mais que palavras, <strong>construímos pontes entre pessoas</strong>, <em>histórias e culturas.</em>
+          </h1>
+          <p class="hero-sub">
+            Acreditamos que a comunicação é um direito de todos e aqui, ela também fala em Libras, com respeito, clareza e inclusão.
+          </p>
+
+          <div class="hero-actions">
+            <a href="#about" class="btn primary" id="btn-sobre">sobre nós</a>
+            <a href="#tradutor" class="btn ghost" id="btn-tradutor">Acessar o tradutor</a>
+          </div>
+        </div>
+
+        <div class="hero-right" aria-hidden="true">
+          <img src="{{ url_for('static', filename='computadorlibras.png') }}" alt="" class="hero-image">
+        </div>
+      </div>
+
+      <!-- decorative wave -->
+      <svg class="hero-wave" viewBox="0 0 1440 120" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M0,40 C220,120 440,0 720,40 C1000,80 1220,20 1440,60 L1440 120 L0 120 Z"/>
+      </svg>
+    </section>
+
+    <!-- About / Quem somos -->
+    <section id="about" class="section about">
+      <div class="container about-inner">
+        <div class="about-left">
+          <img src="{{ url_for('static', filename='logolibras.png') }}" alt="Logo ponte Libras Bridge" class="about-logo">
+        </div>
+
+        <div class="about-right">
+          <h2 class="section-title">Libras Bridge</h2>
+          <p class="lead">
+            A comunicação entre surdos e ouvintes ainda enfrenta barreiras, dificultando a inclusão social. O Libras Bridge busca superar esse desafio ao reconhecer Libras em tempo real e convertê-la em texto e voz, promovendo acessibilidade e igualdade na comunicação.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Quem somos long -->
+    <section class="section quem" aria-labelledby="quem-title">
+      <div class="container text-center">
+        <h3 id="quem-title" class="big-title">Quem somos</h3>
+
+        <p class="quem-text">
+          Somos uma equipe comprometida em promover a inclusão digital e social por meio da tecnologia. Desenvolvemos o Libras Bridge, uma plataforma web que reconhece sinais em Libras via câmera e os traduz em texto e voz em tempo real.
+        </p>
+      </div>
+    </section>
+
+    <!-- TIME -->
+    <section class="section team">
+      <div class="container">
+        <h4 class="team-title">Nossa equipe</h4>
+
+        <div class="team-grid">
+          <div class="member">
+            <div class="avatar-bg"><img src="{{ url_for('static', filename='assets/antonio.png') }}" alt="Antônio"></div>
+            <p class="name">Antônio</p>
+          </div>
+          <div class="member">
+            <div class="avatar-bg"><img src="{{ url_for('static', filename='assets/julia.png') }}" alt="Julia" style="transform: scale(1.15); transform-origin: bottom center;"></div>
+            <p class="name">Julia</p>
+          </div>
+          <div class="member">
+            <div class="avatar-bg"><img src="{{ url_for('static', filename='assets/larissa.png') }}" alt="Larissa" style="transform: scale(1.15); transform-origin: bottom center;"></div>
+            <p class="name">Larissa</p>
+          </div>
+          <div class="member">
+            <div class="avatar-bg"><img src="{{ url_for('static', filename='assets/maria.png') }}" alt="Maria" style="width: 190px !important; bottom: -40px !important; max-width: none !important;"></div>
+            <p class="name">Maria</p>
+          </div>
+          <div class="member">
+            <div class="avatar-bg"><img src="{{ url_for('static', filename='assets/lara.png') }}" alt="Lara" style="transform: scale(1.45); transform-origin: bottom center;"></div>
+            <p class="name">Lara</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- OBJETIVO-->
+    <section class="section mission">
+      <div class="container text-center">
+        <h2 class="mission-title">Conectamos pessoas, eliminamos barreiras. Saiba mais sobre nossa missão!</h2>
+        <p class="mission-text">
+          Nosso tradutor consiste em uma ferramenta inclusiva e ágil; a partir dela é possível traduzir gestos em Libras e assim melhorar a comunicação entre uma pessoa ouvinte e não ouvinte.
+        </p>
+      </div>
+    </section>
+
+    <!-- Translator / TRADUTOR -->
+    <section id="tradutor" class="section tradutor">
+      <div class="container tradutor-inner">
+        <h2 class="trans-title">Faça o gesto para transcrever...</h2>
+        
+        <div class="video-area" role="region" aria-label="Área do tradutor">
+          <img id="video-canvas" alt="Vídeo da webcam">
+          <div id="video-placeholder" class="video-placeholder">
+            <div>📷</div>
+            <div>Clique em "Iniciar Câmera" para começar</div>
+          </div>
+        </div>
+
+        <div class="tradutor-controls">
+          <button id="start-btn" class="control-btn start">
+            🎥 Iniciar Câmera
+          </button>
+          <button id="stop-btn" class="control-btn stop" disabled>
+            ⏹️ Parar Câmera
+          </button>
+        </div>
+
+        <div class="status-indicator">
+          <span class="status-dot" id="status-dot"></span>
+          <span id="status-text">Desconectado</span>
+        </div>
+
+        <div class="translation-panel">
+          <div class="translation-title">Tradução Atual:</div>
+          <div class="translation-output empty" id="translation-output">
+            Aguardando detecção de gestos...
+          </div>
+          <div class="confidence-bar">
+            <div class="confidence-fill" id="confidence-fill"></div>
+          </div>
+        </div>
+
+        <div class="history-panel">
+          <div class="history-title">📋 Histórico de Traduções:</div>
+          <div id="history-list">
+            <div style="color: var(--muted); text-align: center; padding: 20px;">
+              Nenhuma tradução ainda
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer id="contato" class="site-footer">
+      <div class="container footer-grid">
+        <div class="footer-col">
+          <h5>Home</h5>
+          <ul>
+            <li><a href="#home">Home</a></li>
+            <li><a href="#about">Sobre</a></li>
+            <li><a href="#tradutor">Explorar</a></li>
+            <li><a href="#contato">Contato</a></li>
+          </ul>
+        </div>
+
+        <div class="footer-col">
+          <h5>Soluções</h5>
+          <p>Plataforma de tradução em tempo real e ferramentas de acessibilidade.</p>
+        </div>
+
+        <div class="footer-col">
+          <h5>Ajuda</h5>
+          <p>Central de ajuda</p>
+        </div>
+
+        <div class="footer-col socials">
+          <h5>Redes sociais</h5>
+          <p><span class="icon">📞</span> (12) 9 9999-9999</p>
+          <p><span class="icon">📷</span> libras.bridge</p>
+          <p><span class="icon">📘</span> (12) 9 9999-9999</p>
+        </div>
+      </div>
+
+      <div class="footer-bottom">
+        <div class="container footer-bottom-inner">
+          <img src="{{ url_for('static', filename='logolibras.png') }}" alt="Libras Bridge logo small" class="logo-small">
+          <div class="lang-floating">Português - Brasil</div>
+        </div>
+      </div>
+    </footer>
+
+  </main>
+
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+  
+  <script>
+    // WebSocket Integration
+    const socket = io();
+    let isStreaming = false;
+    let historyCount = 0;
+
+    const startBtn = document.getElementById('start-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    const videoCanvas = document.getElementById('video-canvas');
+    const placeholder = document.getElementById('video-placeholder');
+    const statusDot = document.getElementById('status-dot');
+    const statusText = document.getElementById('status-text');
+    const translationOutput = document.getElementById('translation-output');
+    const confidenceFill = document.getElementById('confidence-fill');
+    const historyList = document.getElementById('history-list');
+
+    // Socket Events
+    socket.on('connect', () => {
+      console.log('Conectado ao servidor');
+      statusDot.classList.add('connected');
+      statusText.textContent = 'Conectado';
+    });
+
+    socket.on('disconnect', () => {
+      console.log('Desconectado do servidor');
+      statusDot.classList.remove('connected', 'detecting');
+      statusText.textContent = 'Desconectado';
+      stopCamera();
+    });
+
+    socket.on('frame', (data) => {
+      // Atualizar imagem
+      videoCanvas.src = 'data:image/jpeg;base64,' + data.image;
+      
+      // Atualizar status
+      if (data.hand_detected) {
+        statusDot.classList.add('detecting');
+        statusText.textContent = 'Detectando mão...';
+      } else {
+        statusDot.classList.remove('detecting');
+        statusText.textContent = 'Aguardando mão...';
+      }
+
+      // Atualizar tradução
+      if (data.gesto && data.confianca > 0) {
+        translationOutput.textContent = data.gesto.toUpperCase();
+        translationOutput.classList.remove('empty');
+        confidenceFill.style.width = data.confianca + '%';
+        
+        // Adicionar ao histórico
+        addToHistory(data.gesto, data.confianca);
+      }
+    });
+
+    // Controls
+    startBtn.addEventListener('click', () => {
+      startBtn.disabled = true;
+      statusText.textContent = 'Iniciando câmera...';
+      
+      // Delay pequeno para UI atualizar antes de travar com o request
+      setTimeout(() => {
+        socket.emit('start_camera');
+      }, 50);
+    });
+    
+    socket.on('camera_started', () => {
+      startStreaming();
+      statusText.textContent = 'Câmera iniciada!';
+      // Reabilitar botão de parar caso esteja desabilitado
+      stopBtn.disabled = false;
+      startBtn.disabled = true;
+    });
+
+    socket.on('camera_error', (data) => {
+      alert('Erro ao iniciar a câmera: ' + data.message);
+      stopCamera();
+    });
+
+    socket.on('camera_stopped', () => {
+        // Confirmação do servidor que parou
+        stopCamera();
+    });
+
+    stopBtn.addEventListener('click', () => {
+      stopBtn.disabled = true; // Evitar duplo clique
+      statusText.textContent = 'Parando câmera...';
+      socket.emit('stop_camera');
+      // O stopCamera() será chamado pelo evento 'camera_stopped' ou timeout
+      setTimeout(stopCamera, 1000); 
+    });
+
+    function startStreaming() {
+      isStreaming = true;
+      videoCanvas.classList.add('active');
+      placeholder.classList.add('hidden');
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      
+      requestFrame();
+    }
+
+    function stopCamera() {
+      isStreaming = false;
+      videoCanvas.classList.remove('active');
+      placeholder.classList.remove('hidden');
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      translationOutput.textContent = 'Aguardando detecção de gestos...';
+      translationOutput.classList.add('empty');
+      confidenceFill.style.width = '0%';
+      statusDot.classList.remove('detecting');
+      statusText.textContent = 'Câmera parada';
+    }
+
+    function requestFrame() {
+      if (isStreaming) {
+        socket.emit('request_frame');
+        setTimeout(requestFrame, 30); // ~33 FPS (mais fluido)
+      }
+    }
+
+    let lastGesto = null;
+    function addToHistory(gesto, confianca) {
+      // Evitar duplicatas consecutivas
+      if (gesto === lastGesto) return;
+      lastGesto = gesto;
+
+      const now = new Date();
+      const time = now.toLocaleTimeString('pt-BR');
+      
+      if (historyCount === 0) {
+        historyList.innerHTML = '';
+      }
+      
+      const item = document.createElement('div');
+      item.className = 'history-item';
+      item.innerHTML = `
+        <span><strong>${gesto.toUpperCase()}</strong></span>
+        <span class="history-time">${time}</span>
+      `;
+      
+      historyList.insertBefore(item, historyList.firstChild);
+      historyCount++;
+      
+      // Manter apenas últimos 10
+      if (historyCount > 10) {
+        historyList.removeChild(historyList.lastChild);
+      }
+    }
+  </script>
+</body>
+</html>
