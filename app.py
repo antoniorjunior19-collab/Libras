@@ -25,12 +25,14 @@ except:
 # Configuração MediaPipe
 mp_hands = mp.solutions.hands
 mp_draw = mp.solutions.drawing_utils
+
+# Configuração simplificada para evitar uso de GPU
 hands = mp_hands.Hands(
     static_image_mode=False,
     max_num_hands=1,
     min_detection_confidence=0.7,
     min_tracking_confidence=0.5,
-    model_complexity=0
+    model_complexity=0 # 0 = Lite (mais rápido, menos preciso, menos dependente de GPU)
 )
 
 # ==========================================
