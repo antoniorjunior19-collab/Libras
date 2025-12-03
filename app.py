@@ -68,12 +68,23 @@ def process_frame_logic(frame, state):
     
     # Se hands não estiver inicializado, tentar recuperar (ou retornar vazio)
     if hands is None:
-        return {
-            'gesto': None,
-            'confianca': 0,
-            'frames_coletados': 0,
-            'hand_detected': False
-        }
+        try:
+            print("[INFO] Tentando inicializar MediaPipe sob demanda...")
+            hands = mp_hands.Hands(
+                static_image_mode=False,
+                max_num_hands=1,
+                min_detection_confidence=0.7,
+                min_tracking_confidence=0.5,
+                model_complexity=0
+            )
+        except Exception as e:
+            print(f"[ERRO] Falha na inicialização sob demanda: {e}")
+            return {
+                'gesto': None,
+                'confianca': 0,
+                'frames_coletados': 0,
+                'hand_detected': False
+            }
 
     # Redimensionar se necessário para consistência
     if frame.shape[1] > 320:
