@@ -442,12 +442,12 @@
 
     const startBtn = document.getElementById('start-btn');
     const stopBtn = document.getElementById('stop-btn');
-    
-    // Elementos de vídeo
+    // videoPreview é o elemento <video>
     const videoPreview = document.getElementById('video-preview');
+    // frameCanvas é o elemento <canvas> para captura
     const frameCanvas = document.getElementById('frame-canvas');
     const ctx = frameCanvas.getContext('2d');
-    
+
     const placeholder = document.getElementById('video-placeholder');
     const statusDot = document.getElementById('status-dot');
     const statusText = document.getElementById('status-text');
@@ -469,7 +469,7 @@
       stopCamera();
     });
 
-    socket.on('translation_result', (data) => {
+    socket.on('frame_processed', (data) => {
       // Atualizar status
       if (data.hand_detected) {
         statusDot.classList.add('detecting');
@@ -492,82 +492,64 @@
 
     // Controls
     startBtn.addEventListener('click', async () => {
+      startBtn.disabled = true;
+      statusText.textContent = 'Solicitando acesso à câmera...';
+      
       try {
-        startBtn.disabled = true;
-        statusText.textContent = 'Solicitando acesso à câmera...';
-        
-        // 1. Solicitar acesso à câmera do navegador
-        localStream = await navigator.mediaDevices.getUserMedia({ 
+        const stream = await navigator.mediaDevices.getUserMedia({ 
           video: { 
-            width: { ideal: 320 },
-            height: { ideal: 240 },
-            frameRate: { ideal: 30 }
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            facingMode: "user"
           } 
         });
         
-        // 2. Mostrar vídeo local
-        videoPreview.srcObject = localStream;
-        videoPreview.style.display = 'block';
-        placeholder.classList.add('hidden');
-        
-        // 3. Iniciar envio de frames
-        startStreaming();
+        localStream = stream;
+        videoPreview.srcObject = stream;
+        videoPreview.onloadedmetadata = () => {
+            videoPreview.play();
+            startStreaming();
+        };
         
         statusText.textContent = 'Câmera iniciada!';
         stopBtn.disabled = false;
         
+        // Notificar servidor para limpar estado
+        socket.emit('start_camera');
+
       } catch (err) {
         console.error("Erro ao acessar câmera:", err);
-        alert('Não foi possível acessar sua câmera. Verifique as permissões.');
+        alert('Não foi possível acessar a câmera. Verifique as permissões do navegador.');
+        statusText.textContent = 'Erro de acesso à câmera';
         startBtn.disabled = false;
-        statusText.textContent = 'Erro de acesso';
       }
     });
-    
+
     stopBtn.addEventListener('click', () => {
       stopCamera();
     });
 
     function startStreaming() {
       isStreaming = true;
-      // Configurar canvas para o tamanho do vídeo
-      frameCanvas.width = 320;
-      frameCanvas.height = 240;
+      videoPreview.style.display = 'block';
+      placeholder.classList.add('hidden');
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
       
-      sendFrameLoop();
-    }
-
-    function sendFrameLoop() {
-      if (!isStreaming) return;
-
-      // Desenhar frame atual no canvas
-      if (videoPreview.readyState === videoPreview.HAVE_ENOUGH_DATA) {
-        ctx.drawImage(videoPreview, 0, 0, frameCanvas.width, frameCanvas.height);
-        
-        // Converter para Base64 (JPEG qualidade 0.5 para performance)
-        const frameData = frameCanvas.toDataURL('image/jpeg', 0.5);
-        
-        // Remover prefixo "data:image/jpeg;base64,"
-        const base64Data = frameData.split(',')[1];
-        
-        // Enviar para o servidor
-        socket.emit('process_frame', { image: base64Data });
-      }
-
-      // Tentar manter ~15 FPS para não sobrecarregar o servidor
-      setTimeout(sendFrameLoop, 66); 
+      // Enviar frames
+      sendFrame();
     }
 
     function stopCamera() {
       isStreaming = false;
       
-      // Parar tracks da câmera
       if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
         localStream = null;
       }
       
       videoPreview.style.display = 'none';
+      videoPreview.srcObject = null;
       placeholder.classList.remove('hidden');
       
       startBtn.disabled = false;
@@ -578,6 +560,36 @@
       confidenceFill.style.width = '0%';
       statusDot.classList.remove('detecting');
       statusText.textContent = 'Câmera parada';
+      
+      socket.emit('stop_camera');
+    }
+
+    function sendFrame() {
+      if (!isStreaming) return;
+
+      if (videoPreview.readyState === videoPreview.HAVE_ENOUGH_DATA) {
+          // Fixar tamanho do canvas para 320x240 para otimizar envio
+          const targetWidth = 320;
+          const targetHeight = 240;
+
+          if (frameCanvas.width !== targetWidth || frameCanvas.height !== targetHeight) {
+              frameCanvas.width = targetWidth;
+              frameCanvas.height = targetHeight;
+          }
+          
+          // Desenhar redimensionado
+          ctx.drawImage(videoPreview, 0, 0, targetWidth, targetHeight);
+          
+          // Converter para base64 e enviar
+          // Reduzir qualidade para 0.5 para economizar banda
+          const dataURL = frameCanvas.toDataURL('image/jpeg', 0.5);
+          const base64 = dataURL.split(',')[1];
+          
+          socket.emit('process_frame_web', { image: base64 });
+      }
+      
+      // Limitar FPS de envio para não sobrecarregar servidor (ex: 10 FPS = 100ms)
+      setTimeout(sendFrame, 100); 
     }
 
     let lastGesto = null;

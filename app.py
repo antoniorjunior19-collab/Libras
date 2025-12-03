@@ -1,4 +1,4 @@
-from flask import Flask, render_template, Response, jsonify, request
+from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit
 import cv2
 import mediapipe as mp
@@ -9,9 +9,6 @@ import base64
 import io
 import os
 from PIL import Image
-import threading
-import time
-import socket
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'libras_bridge_secret'
@@ -105,79 +102,20 @@ def process_frame_logic(frame, state):
     }
 
 # ==========================================
-# Câmera do Servidor (Apenas para versão Web Local)
+# Startup Check
 # ==========================================
-camera = None
-frame_count = 0 
+def check_mediapipe():
+    print("[INFO] Verificando MediaPipe...")
+    try:
+        dummy_frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        results = hands.process(dummy_frame)
+        print("[INFO] MediaPipe inicializado com sucesso (teste de inferência ok)")
+    except Exception as e:
+        print(f"[ERRO] Falha na verificação do MediaPipe: {e}")
 
-class VideoCamera:
-    def __init__(self):
-        # Tentar índices diferentes e backends diferentes
-        self.video = None
-        self.stopped = False
-        
-        # Lista de tentativas: (index, backend)
-        attempts = []
-        if os.name == 'nt':
-            attempts = [(0, cv2.CAP_DSHOW), (0, cv2.CAP_MSMF), (1, cv2.CAP_DSHOW), (1, cv2.CAP_MSMF)]
-        else:
-            attempts = [(0, cv2.CAP_ANY), (1, cv2.CAP_ANY)]
-            
-        for idx, backend in attempts:
-            try:
-                print(f"[DEBUG] Tentando abrir câmera índice {idx} com backend {backend}...")
-                cap = cv2.VideoCapture(idx, backend)
-                if cap.isOpened():
-                    # Tentar ler um frame para confirmar
-                    ret, frame = cap.read()
-                    if ret and frame is not None and frame.size > 0:
-                        self.video = cap
-                        self.grabbed = ret
-                        self.frame = frame
-                        print(f"[INFO] Câmera aberta com sucesso: Índice {idx}")
-                        break
-                    else:
-                        cap.release()
-            except Exception as e:
-                print(f"[ERRO] Falha ao tentar índice {idx}: {e}")
-                
-        if self.video is None or not self.video.isOpened():
-            raise RuntimeError("Não foi possível abrir nenhuma câmera. Verifique se a câmera está conectada e não está sendo usada por outro programa.")
-        
-        self.video.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-        self.video.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-        self.video.set(cv2.CAP_PROP_FPS, 30)
-            
-        self.thread = threading.Thread(target=self.update, args=())
-        self.thread.daemon = True
-        self.thread.start()
-    
-    def update(self):
-        while not self.stopped:
-            if self.video.isOpened():
-                grabbed, frame = self.video.read()
-                if grabbed:
-                    self.grabbed = grabbed
-                    self.frame = frame
-                else:
-                    self.stopped = True
-            else:
-                self.stopped = True
-            time.sleep(0.01)
-            
-    def stop(self):
-        self.stopped = True
-        if self.thread.is_alive():
-            self.thread.join(timeout=1.0)
-        if self.video.isOpened():
-            self.video.release()
-    
-    def get_frame(self):
-        if not self.grabbed or self.stopped:
-            return None
-        frame = self.frame.copy()
-        frame = cv2.flip(frame, 1)
-        return frame
+# Executar verificação na inicialização
+with app.app_context():
+    check_mediapipe()
 
 # ==========================================
 # Rotas e Eventos
@@ -196,31 +134,53 @@ def handle_disconnect():
     print(f'[INFO] Cliente desconectado: {request.sid}')
     if request.sid in client_states:
         del client_states[request.sid]
-    
-    # Se for o dono da câmera web (simplificado: se câmera está ativa e usuário sai)
-    # Aqui poderíamos melhorar para saber quem iniciou a câmera
-    pass
 
-@socketio.on('process_frame')
+@socketio.on('start_camera')
+def handle_start_camera():
+    sid = request.sid
+    print(f'[INFO] Iniciando câmera para: {sid}')
+    # Reiniciar estado do cliente
+    client_states[sid] = ClientState()
+
+@socketio.on('stop_camera')
+def handle_stop_camera():
+    sid = request.sid
+    print(f'[INFO] Parando câmera para: {sid}')
+    if sid in client_states:
+        # Opcional: limpar buffer ou manter histórico
+        client_states[sid].frames_clip.clear()
+
+@socketio.on('process_frame_web')
 def handle_process_frame(data):
     try:
+        # Debug simples para verificar se está chegando
+        print(f"Frame recebido: {len(data['image'])} bytes")
+
         image_data = base64.b64decode(data['image'])
         image = Image.open(io.BytesIO(image_data))
+        
+        # DEBUG: Verificar imagem
+        # print(f"Imagem decodificada: {image.size} modo={image.mode}")
+
         frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
         
         # Processamento
         state = get_client_state()
         result = process_frame_logic(frame, state)
         
-        # Enviar apenas o resultado (não precisa devolver a imagem)
-        emit('translation_result', {
+        # Debug se detectou mão
+        if result['hand_detected']:
+             print(f"[DEBUG] Mão detectada! Gesto: {result['gesto']} Confiança: {result['confianca']}")
+        
+        # Enviar resultado
+        emit('frame_processed', {
             'gesto': result['gesto'],
             'confianca': result['confianca'],
             'hand_detected': result['hand_detected']
         })
         
     except Exception as e:
-        # Silenciar erros de imagem corrompida ocasional
+        print(f"[ERRO] Processamento de frame: {e}")
         pass
 
     
