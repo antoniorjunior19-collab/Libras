@@ -226,14 +226,16 @@ def handle_process_frame(data):
         
         # Debug se detectou mão
         if result['hand_detected']:
-             print(f"[DEBUG] Mão detectada! Gesto: {result['gesto']} Confiança: {result['confianca']}")
+             print(f"[DEBUG] Mão detectada! Gesto: {result['gesto']} Confiança: {result['confianca']} Frames: {result['frames_coletados']}/{state.clip_size}")
+             if modelo is None:
+                 print("[AVISO] Modelo não carregado! Predição impossível.")
         
         # Enviar resultado
-        emit('frame_processed', {
-            'gesto': result['gesto'],
-            'confianca': result['confianca'],
-            'hand_detected': result['hand_detected']
-        })
+    emit('frame_processed', {
+        'gesto': result['gesto'],
+        'confianca': result['confianca'],
+        'hand_detected': result['hand_detected']
+    })
         
     except Exception as e:
         print(f"[ERRO] Processamento de frame: {e}")
