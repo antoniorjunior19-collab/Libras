@@ -18,8 +18,9 @@ socketio = SocketIO(app, cors_allowed_origins="*", max_http_buffer_size=10000000
 try:
     modelo = joblib.load("modelo_libras.pkl")
     print("[INFO] Modelo carregado com sucesso!")
-except:
-    print("[AVISO] Modelo não encontrado. Execute treinamento.py primeiro.")
+except Exception as e:
+    print(f"[ERRO] Falha ao carregar modelo: {e}")
+    print("[AVISO] Modelo não encontrado ou erro de compatibilidade. Execute treinamento.py primeiro.")
     modelo = None
 
 # Configuração MediaPipe
