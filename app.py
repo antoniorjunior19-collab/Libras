@@ -112,24 +112,42 @@ frame_count = 0
 
 class VideoCamera:
     def __init__(self):
+        # Tentar índices diferentes e backends diferentes
+        self.video = None
+        self.stopped = False
+        
+        # Lista de tentativas: (index, backend)
+        attempts = []
         if os.name == 'nt':
-            self.video = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+            attempts = [(0, cv2.CAP_DSHOW), (0, cv2.CAP_MSMF), (1, cv2.CAP_DSHOW), (1, cv2.CAP_MSMF)]
         else:
-            self.video = cv2.VideoCapture(0)
+            attempts = [(0, cv2.CAP_ANY), (1, cv2.CAP_ANY)]
+            
+        for idx, backend in attempts:
+            try:
+                print(f"[DEBUG] Tentando abrir câmera índice {idx} com backend {backend}...")
+                cap = cv2.VideoCapture(idx, backend)
+                if cap.isOpened():
+                    # Tentar ler um frame para confirmar
+                    ret, frame = cap.read()
+                    if ret and frame is not None and frame.size > 0:
+                        self.video = cap
+                        self.grabbed = ret
+                        self.frame = frame
+                        print(f"[INFO] Câmera aberta com sucesso: Índice {idx}")
+                        break
+                    else:
+                        cap.release()
+            except Exception as e:
+                print(f"[ERRO] Falha ao tentar índice {idx}: {e}")
+                
+        if self.video is None or not self.video.isOpened():
+            raise RuntimeError("Não foi possível abrir nenhuma câmera. Verifique se a câmera está conectada e não está sendo usada por outro programa.")
         
         self.video.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
         self.video.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
         self.video.set(cv2.CAP_PROP_FPS, 30)
-        
-        if not self.video.isOpened():
-            raise RuntimeError("Não foi possível abrir a câmera")
             
-        self.grabbed, self.frame = self.video.read()
-        if not self.grabbed:
-            self.video.release()
-            raise RuntimeError("Não foi possível ler o primeiro frame da câmera")
-            
-        self.stopped = False
         self.thread = threading.Thread(target=self.update, args=())
         self.thread.daemon = True
         self.thread.start()
@@ -183,77 +201,27 @@ def handle_disconnect():
     # Aqui poderíamos melhorar para saber quem iniciou a câmera
     pass
 
-@socketio.on('start_camera')
-def handle_start_camera():
-    global camera
-    
-    # Reinicia estado deste cliente
-    state = get_client_state()
-    state.frames_clip.clear()
-    state.ultimo_gesto = None
-    state.confirmacoes = 0
-    
-    # Lógica Web (Server Camera)
-    if camera is not None:
-        try:
-            camera.stop()
-        except:
-            pass
-        camera = None
-        
+@socketio.on('process_frame')
+def handle_process_frame(data):
     try:
-        camera = VideoCamera()
-        emit('camera_started', {'status': 'success'})
-        print('[INFO] Câmera iniciada (Web)')
-    except Exception as e:
-        print(f"[ERRO] Falha ao iniciar câmera: {e}")
-        emit('camera_error', {'message': str(e)})
-
-@socketio.on('stop_camera')
-def handle_stop_camera():
-    global camera
-    if camera is not None:
-        camera.stop()
-        camera = None
-        emit('camera_stopped', {'status': 'success'})
-        print('[INFO] Câmera parada (Web)')
-
-@socketio.on('request_frame')
-def handle_frame_request():
-    global camera, frame_count
-    
-    if camera is None:
-        return
-    
-    frame = camera.get_frame()
-    if frame is None:
-        return
-    
-    frame_count += 1
-    process_this_frame = (frame_count % 3 == 0)
-    
-    state = get_client_state()
-    
-    result_data = None
-    if process_this_frame:
-        result_data = process_frame_logic(frame, state)
-    
-    # Enviar para web
-    if frame.shape[1] > 320:
-        frame = cv2.resize(frame, (320, 240))
+        image_data = base64.b64decode(data['image'])
+        image = Image.open(io.BytesIO(image_data))
+        frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
         
-    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
-    frame_base64 = base64.b64encode(buffer).decode('utf-8')
-    
-    response = {
-        'image': frame_base64,
-        'gesto': result_data['gesto'] if result_data else None,
-        'confianca': result_data['confianca'] if result_data else 0,
-        'frames_coletados': result_data['frames_coletados'] if result_data else len(state.frames_clip),
-        'hand_detected': result_data['hand_detected'] if result_data else state.last_hand_detected
-    }
-    
-    emit('frame', response)
+        # Processamento
+        state = get_client_state()
+        result = process_frame_logic(frame, state)
+        
+        # Enviar apenas o resultado (não precisa devolver a imagem)
+        emit('translation_result', {
+            'gesto': result['gesto'],
+            'confianca': result['confianca'],
+            'hand_detected': result['hand_detected']
+        })
+        
+    except Exception as e:
+        # Silenciar erros de imagem corrompida ocasional
+        pass
 
     
     
