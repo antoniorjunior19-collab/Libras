@@ -26,14 +26,19 @@ except:
 mp_hands = mp.solutions.hands
 mp_draw = mp.solutions.drawing_utils
 
-# Configuração simplificada para evitar uso de GPU
-hands = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=1,
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.5,
-    model_complexity=0 # 0 = Lite (mais rápido, menos preciso, menos dependente de GPU)
-)
+# Inicialização do MediaPipe com tratamento de erro
+hands = None
+try:
+    hands = mp_hands.Hands(
+        static_image_mode=False,
+        max_num_hands=1,
+        min_detection_confidence=0.7,
+        min_tracking_confidence=0.5,
+        model_complexity=0
+    )
+    print("[INFO] MediaPipe inicializado.")
+except Exception as e:
+    print(f"[ERRO] Falha fatal ao inicializar MediaPipe: {e}")
 
 # ==========================================
 # Gerenciamento de Estado por Cliente (Mobile/Web)
@@ -58,12 +63,45 @@ def get_client_state():
 # Lógica de Processamento (Reutilizável)
 # ==========================================
 def process_frame_logic(frame, state):
+    global hands
+    
+    # Se hands não estiver inicializado, tentar recuperar (ou retornar vazio)
+    if hands is None:
+        return {
+            'gesto': None,
+            'confianca': 0,
+            'frames_coletados': 0,
+            'hand_detected': False
+        }
+
     # Redimensionar se necessário para consistência
     if frame.shape[1] > 320:
         frame = cv2.resize(frame, (320, 240))
 
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(rgb)
+    
+    try:
+        results = hands.process(rgb)
+    except Exception as e:
+        print(f"[ERRO] Falha no processamento do MediaPipe: {e}")
+        # Tentar reiniciar o detector em caso de erro de contexto GL
+        try:
+            hands.close()
+            hands = mp_hands.Hands(
+                static_image_mode=False,
+                max_num_hands=1,
+                min_detection_confidence=0.7,
+                min_tracking_confidence=0.5,
+                model_complexity=0
+            )
+        except:
+            pass
+        return {
+            'gesto': None,
+            'confianca': 0,
+            'frames_coletados': 0,
+            'hand_detected': False
+        }
     
     gesto_atual = None
     confianca = 0
@@ -108,6 +146,10 @@ def process_frame_logic(frame, state):
 # ==========================================
 def check_mediapipe():
     print("[INFO] Verificando MediaPipe...")
+    if hands is None:
+        print("[ERRO] MediaPipe não foi inicializado.")
+        return
+
     try:
         dummy_frame = np.zeros((240, 320, 3), dtype=np.uint8)
         results = hands.process(dummy_frame)
